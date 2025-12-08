@@ -4,89 +4,73 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-app.use(express.json()); // parse JSON body từ sPayment
+app.use(express.json());
 
 const LARK_WEBHOOK_URL = process.env.LARK_WEBHOOK_URL;
 
 if (!LARK_WEBHOOK_URL) {
-  console.error("⚠️  Missing LARK_WEBHOOK_URL in .env");
+  console.error("⚠️ Missing LARK_WEBHOOK_URL");
   process.exit(1);
 }
 
-// Endpoint check sống
+// Health check
 app.get("/", (req, res) => {
   res.send("sPayment ↔ Lark bridge is running");
 });
 
-// Endpoint sPayment gọi vào
+// Webhook chính
 app.post("/webhook/spayment", async (req, res) => {
   try {
     const payload = req.body;
     console.log("🔥 sPayment payload:", JSON.stringify(payload, null, 2));
 
-    // ĐOÁN TÊN FIELD PHỔ BIẾN (cứ thêm dần nếu cần)
-    const amount =
-      payload.amount ||
-      payload.money ||
-      payload.amount_vnd ||
-      payload.SoTien ||
-      payload.so_tien ||
-      payload.so_tien_giao_dich ||
-      "";
+    // ✅ sPayment gửi data dạng mảng
+    const tx = payload?.data?.[0];
 
-    const content =
-      payload.description ||
-      payload.NoiDung ||
-      payload.noi_dung ||
-      payload.ghi_chu ||
-      payload.content ||
-      "";
+    if (!tx) {
+      console.warn("⚠️ No transaction data found");
+      return res.status(200).json({ status: "no_data" });
+    }
 
-    const transId =
-      payload.trans_id ||
-      payload.transactionId ||
-      payload.transaction_id ||
-      payload.trans_ref ||
-      payload.MaGiaoDich ||
-      payload.ma_giao_dich ||
-      payload.trace_id ||
-      "";
+    const {
+      type,
+      transactionID,
+      amount,
+      description,
+      bank,
+    } = tx;
 
-    // Build message gửi sang Lark
-    const textLines = [
+    const direction = type === "IN" ? "💸 Nhận tiền" : "💳 Giao dịch";
+    const formattedAmount = Number(amount).toLocaleString("vi-VN") + " VND";
+
+    const text = [
       "📩 Giao dịch mới từ sPayment",
-      amount && `💰 Số tiền: ${amount}`,
-      transId && `🔢 Mã giao dịch: ${transId}`,
-      content && `📝 Nội dung: ${content}`,
-      "",
-      "📦 Payload (JSON):",
-      JSON.stringify(payload, null, 2),
+      direction,
+      `🏦 Ngân hàng: ${bank.toUpperCase()}`,
+      `💰 Số tiền: ${formattedAmount}`,
+      `🔢 Mã giao dịch: ${transactionID}`,
+      `📝 Nội dung: ${description}`,
       "",
       "Nguồn: sPayment webhook",
-    ].filter(Boolean);
+    ].join("\n");
 
-    const text = textLines.join("\n");
-
-    // Gửi message sang Lark
+    // Gửi sang Lark
     const larkResp = await fetch(LARK_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         msg_type: "text",
-        content: {
-          text,
-        },
+        content: { text },
       }),
     });
 
     const larkData = await larkResp.json().catch(() => ({}));
     console.log("✅ Lark response:", larkData);
 
-    // Trả lời cho sPayment (HTTP 200 là ổn)
     return res.status(200).json({ status: "ok" });
   } catch (err) {
-    console.error("💥 Error in /webhook/spayment:", err);
-    return res.status(500).json({ status: "error", message: "internal error" });
+    console.error("💥 Webhook error:", err);
+    return res.status(500).json({ status: "error" });
   }
 });
 
