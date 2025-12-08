@@ -13,6 +13,19 @@ if (!LARK_WEBHOOK_URL) {
   process.exit(1);
 }
 
+// Cache tránh gửi trùng
+const processedTxIds = new Set();
+const MAX_CACHE_SIZE = 1000;
+
+function markProcessed(txId) {
+  processedTxIds.add(txId);
+  if (processedTxIds.size > MAX_CACHE_SIZE) {
+    // xóa bớt cho đỡ phình, lấy phần tử đầu tiên trong Set
+    const first = processedTxIds.values().next().value;
+    processedTxIds.delete(first);
+  }
+}
+
 // Health check
 app.get("/", (req, res) => {
   res.send("sPayment ↔ Lark bridge is running");
@@ -24,7 +37,6 @@ app.post("/webhook/spayment", async (req, res) => {
     const payload = req.body;
     console.log("🔥 sPayment payload:", JSON.stringify(payload, null, 2));
 
-    // ✅ sPayment gửi data dạng mảng
     const tx = payload?.data?.[0];
 
     if (!tx) {
@@ -33,6 +45,7 @@ app.post("/webhook/spayment", async (req, res) => {
     }
 
     const {
+      id,
       type,
       transactionID,
       amount,
@@ -40,13 +53,27 @@ app.post("/webhook/spayment", async (req, res) => {
       bank,
     } = tx;
 
+    const txKey = transactionID || id;
+
+    // 🧱 CHẶN TRÙNG Ở ĐÂY
+    if (txKey && processedTxIds.has(txKey)) {
+      console.log("♻️ Duplicate transaction, skip send:", txKey);
+      return res.status(200).json({ status: "duplicate" });
+    }
+
+    // đánh dấu đã xử lý
+    if (txKey) {
+      markProcessed(txKey);
+    }
+
     const direction = type === "IN" ? "💸 Nhận tiền" : "💳 Giao dịch";
-    const formattedAmount = Number(amount).toLocaleString("vi-VN") + " VND";
+    const formattedAmount =
+      Number(amount).toLocaleString("vi-VN") + " VND";
 
     const text = [
       "📩 Giao dịch mới từ sPayment",
       direction,
-      `🏦 Ngân hàng: ${bank.toUpperCase()}`,
+      `🏦 Ngân hàng: ${bank?.toUpperCase?.() || bank || "N/A"}`,
       `💰 Số tiền: ${formattedAmount}`,
       `🔢 Mã giao dịch: ${transactionID}`,
       `📝 Nội dung: ${description}`,
@@ -54,7 +81,6 @@ app.post("/webhook/spayment", async (req, res) => {
       "Nguồn: sPayment webhook",
     ].join("\n");
 
-    // Gửi sang Lark
     const larkResp = await fetch(LARK_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
