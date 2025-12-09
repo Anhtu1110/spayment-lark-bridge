@@ -4,26 +4,13 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json()); // parse JSON body
 
 const LARK_WEBHOOK_URL = process.env.LARK_WEBHOOK_URL;
 
 if (!LARK_WEBHOOK_URL) {
-  console.error("⚠️ Missing LARK_WEBHOOK_URL");
+  console.error("❌ Missing LARK_WEBHOOK_URL in .env");
   process.exit(1);
-}
-
-// Cache tránh gửi trùng
-const processedTxIds = new Set();
-const MAX_CACHE_SIZE = 1000;
-
-function markProcessed(txId) {
-  processedTxIds.add(txId);
-  if (processedTxIds.size > MAX_CACHE_SIZE) {
-    // xóa bớt cho đỡ phình, lấy phần tử đầu tiên trong Set
-    const first = processedTxIds.values().next().value;
-    processedTxIds.delete(first);
-  }
 }
 
 // Health check
@@ -31,56 +18,52 @@ app.get("/", (req, res) => {
   res.send("sPayment ↔ Lark bridge is running");
 });
 
-// Webhook chính
+// Main webhook
 app.post("/webhook/spayment", async (req, res) => {
-  try {
-    const payload = req.body;
-    console.log("🔥 sPayment payload:", JSON.stringify(payload, null, 2));
+  console.log("🔥 Incoming sPayment payload:", JSON.stringify(req.body, null, 2));
 
-    const tx = payload?.data?.[0];
+  try {
+    // sPayment payload dạng:
+    // { status: true, data: [ { ...giao_dich... } ] }
+    const tx = req.body?.data?.[0] || req.body;
 
     if (!tx) {
-      console.warn("⚠️ No transaction data found");
-      return res.status(200).json({ status: "no_data" });
+      console.warn("⚠️ No transaction object found in payload");
+      // vẫn trả 200 cho sPayment
+      return res.sendStatus(200);
     }
 
-    const {
-      id,
-      type,
-      transactionID,
-      amount,
-      description,
-      bank,
-    } = tx;
+    const type = tx.type || "UNKNOWN";
+    const bank = (tx.bank || "").toUpperCase();
+    const transactionID = tx.transactionID || tx.trans_id || tx.id || "";
+    const amountRaw = tx.amount || tx.amount_vnd || "0";
+    const description = tx.description || tx.content || "";
 
-    const txKey = transactionID || id;
-
-// 🧱 CHẶN TRÙNG
-if (txKey && processedTxIds.has(txKey)) {
-  console.log("♻️ Duplicate transaction, skip send:", txKey);
-
-  // ✅ Luôn trả OK cho sPayment
-  return res.status(200).json({
-    status: true,
-    message: "ok"
-  });
-}
-
-    const direction = type === "IN" ? "💸 Nhận tiền" : "💳 Giao dịch";
+    const amountNumber = Number(amountRaw) || 0;
     const formattedAmount =
-      Number(amount).toLocaleString("vi-VN") + " VND";
+      amountNumber.toLocaleString("vi-VN") + " VND";
 
-    const text = [
+    const direction =
+      type === "IN"
+        ? "💸 Nhận tiền"
+        : type === "OUT"
+        ? "💳 Chuyển tiền"
+        : "🔁 Giao dịch";
+
+    const lines = [
       "📩 Giao dịch mới từ sPayment",
       direction,
-      `🏦 Ngân hàng: ${bank?.toUpperCase?.() || bank || "N/A"}`,
+      bank && `🏦 Ngân hàng: ${bank}`,
       `💰 Số tiền: ${formattedAmount}`,
-      `🔢 Mã giao dịch: ${transactionID}`,
-      `📝 Nội dung: ${description}`,
+      transactionID && `🔢 Mã giao dịch: ${transactionID}`,
+      description && `📝 Nội dung: ${description}`,
       "",
       "Nguồn: sPayment webhook",
-    ].join("\n");
+    ].filter(Boolean);
 
+    const text = lines.join("\n");
+
+    // Gửi sang Lark
     const larkResp = await fetch(LARK_WEBHOOK_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -93,10 +76,12 @@ if (txKey && processedTxIds.has(txKey)) {
     const larkData = await larkResp.json().catch(() => ({}));
     console.log("✅ Lark response:", larkData);
 
-    return res.status(200).json({ status: "ok" });
+    // Trả về cho sPayment: luôn 200 nếu xử lý xong tới đây
+    return res.sendStatus(200);
   } catch (err) {
-    console.error("💥 Webhook error:", err);
-    return res.status(500).json({ status: "error" });
+    console.error("💥 Error handling webhook:", err);
+    // Nếu toang nặng thì cho sPayment biết
+    return res.sendStatus(500);
   }
 });
 
