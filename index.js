@@ -55,16 +55,16 @@ app.post("/webhook/spayment", async (req, res) => {
 
     const txKey = transactionID || id;
 
-    // 🧱 CHẶN TRÙNG Ở ĐÂY
-    if (txKey && processedTxIds.has(txKey)) {
-      console.log("♻️ Duplicate transaction, skip send:", txKey);
-      return res.status(200).json({ status: "duplicate" });
-    }
+// 🧱 CHẶN TRÙNG
+if (txKey && processedTxIds.has(txKey)) {
+  console.log("♻️ Duplicate transaction, skip send:", txKey);
 
-    // đánh dấu đã xử lý
-    if (txKey) {
-      markProcessed(txKey);
-    }
+  // ✅ Luôn trả OK cho sPayment
+  return res.status(200).json({
+    status: true,
+    message: "ok"
+  });
+}
 
     const direction = type === "IN" ? "💸 Nhận tiền" : "💳 Giao dịch";
     const formattedAmount =
